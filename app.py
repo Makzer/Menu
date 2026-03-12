@@ -1,98 +1,68 @@
 import streamlit as st
 import google.generativeai as genai
-import gspread
 import json
-import pandas as pd
 from datetime import datetime, timedelta
 
-# --- CONFIGURATION & IA ---
-st.set_page_config(page_title="Nutri-Planning Pro", layout="wide")
+# --- CONFIGURATION ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-2.5-flash')
 
-# --- CONNEXION SHEETS ---
-credentials = dict(st.secrets["gcp_service_account"])
-gc = gspread.service_account_from_dict(credentials)
-sh = gc.open("NutriPlanning_DB")
-
-# --- RÉGLAGES FOYER ---
-RATIOS = {"Papa": 1.0, "Maman": 1.0, "Enfant_4ans": 0.7, "Bebe_16mois": 0.5}
-
-# --- MODULE PARAMÈTRES (Goûts de chacun) ---
-def get_preferences():
-    ws = sh.worksheet("Preferences")
-    return pd.DataFrame(ws.get_all_records())
+# --- INITIALISATION MÉMOIRE ---
+if 'planning_temp' not in st.session_state:
+    st.session_state.planning_temp = {} # Format: { "2026-03-12": {"Midi": {...}, "Soir": {...}} }
 
 # --- INTERFACE ---
-st.title("🍴 Family Menu Manager")
+st.title("📅 Calendrier de Repas Dynamique")
 
-tab_plan, tab_fav, tab_set = st.tabs(["🗓️ Planning & Calendrier", "⭐ Mes Favoris", "⚙️ Paramètres"])
+# 1. Sélecteur de plage
+c1, c2 = st.columns(2)
+d_debut = c1.date_input("Du", datetime.now())
+d_fin = c2.date_input("Au", datetime.now() + timedelta(days=3))
 
-# --- TAB : PARAMÈTRES ---
-with tab_set:
-    st.header("👤 Préférences du Foyer")
-    pref_df = get_preferences()
-    st.write("Dites à l'IA ce que vous aimez ou détestez :")
-    # Formulaire simplifié pour éditer les goûts
-    with st.form("edit_prefs"):
-        st.data_editor(pref_df, key="pref_editor", num_rows="dynamic")
-        if st.form_submit_button("Sauvegarder les préférences"):
-            sh.worksheet("Preferences").update([pref_df.columns.values.tolist()] + pref_df.values.tolist())
-            st.success("Préférences mises à jour !")
+# Génération initiale
+if st.button("🪄 Générer le planning complet"):
+    # On crée la structure vide ou remplie par l'IA
+    delta = (d_fin - d_debut).days + 1
+    for i in range(delta):
+        current_date = str(d_debut + timedelta(days=i))
+        if current_date not in st.session_state.planning_temp:
+            # Ici on ferait l'appel IA pour remplir d'un coup
+            st.session_state.planning_temp[current_date] = {
+                "Midi": {"plat": "À définir", "theme": "Rapide", "repeté": False},
+                "Soir": {"plat": "À définir", "theme": "Équilibré", "repeté": False}
+            }
 
-# --- TAB : FAVORIS ---
-with tab_fav:
-    st.header("❤️ Recettes Favorites")
-    ws_fav = sh.worksheet("Favoris")
-    fav_df = pd.DataFrame(ws_fav.get_all_records())
-    if not fav_df.empty:
-        for idx, row in fav_df.iterrows():
-            with st.expander(row['Nom']):
-                st.write(row['Ingredients'])
-                if st.button("Ajouter au planning", key=f"fav_{idx}"):
-                    # Logique pour injecter ce favori dans le planning
-                    pass
-    else:
-        st.info("Aucun favori pour le moment.")
-
-# --- TAB : PLANNING & CALENDRIER ---
-with tab_plan:
-    # 1. Sélection des participants (Convives)
-    st.sidebar.header("👥 Qui mange ?")
-    participants = {}
-    for membre, ratio in RATIOS.items():
-        participants[membre] = st.sidebar.checkbox(membre, value=True)
-    
-    # Calcul du ratio total actuel
-    ratio_total = sum([RATIOS[m] for m, p in participants.items() if p])
-    st.sidebar.info(f"Portions calculées : {ratio_total}")
-
-    # 2. Vue Calendrier (Grille de 7 colonnes)
-    st.header("📅 Mon Planning Hebdomadaire")
-    dates_semaine = [datetime.now() + timedelta(days=i) for i in range(7)]
-    cols = st.columns(7)
-    
-    for i, date in enumerate(dates_semaine):
-        with cols[i]:
-            st.markdown(f"**{date.strftime('%a %d')}**")
-            # Zone "Drog & Drop" simulée par un container
-            with st.container(border=True):
-                st.caption("Dîner")
-                # Ici on affiche le repas si déjà en BDD, sinon un bouton "+"
-                if st.button("➕", key=f"add_{i}"):
-                    st.session_state.date_a_remplir = date
-                    # Trigger vers l'IA pour ce jour précis
-
-    # 3. Génération Assistée par IA
-    st.divider()
-    if st.button("🪄 Suggérer un menu basé sur nos goûts"):
-        # On récupère les prefs pour le prompt
-        prefs = get_preferences().to_string()
-        prompt = f"""Génère un menu. 
-        Participants (ratio total {ratio_total}). 
-        Préférences de la famille : {prefs}.
-        Réponds en JSON uniquement."""
+# --- AFFICHAGE GRILLE CALENDRIER ---
+if st.session_state.planning_temp:
+    for date_str, repas in st.session_state.planning_temp.items():
+        st.subheader(f"🗓️ {date_str}")
+        col_midi, col_soir = st.columns(2)
         
-        with st.spinner("L'IA concocte un menu sur-mesure..."):
-            res = model.generate_content(prompt)
-            # Affichage pour validation (comme vu précédemment)
+        for moment, col in [("Midi", col_midi), ("Soir", col_soir)]:
+            with col:
+                with st.container(border=True):
+                    st.write(f"**{moment}**")
+                    data = repas[moment]
+                    
+                    # Affichage du plat actuel
+                    st.markdown(f"🍴 **{data['plat']}**")
+                    
+                    # Logique de répétition (Cook once, eat twice)
+                    data['repeté'] = st.checkbox("Répéter au repas suivant", value=data.get('repeté', False), key=f"rep_{date_str}_{moment}")
+                    
+                    # Boutons d'action
+                    ca1, ca2 = st.columns(2)
+                    if ca1.button("🔄 Régénérer", key=f"reg_{date_str}_{moment}"):
+                        # Appel IA ciblé
+                        prompt = f"Propose une idée de repas pour le {moment}. Équipements: Four, Plaques. Famille 4 pers."
+                        new_plat = model.generate_content(prompt).text[:50] # Simplifié pour l'exemple
+                        st.session_state.planning_temp[date_str][moment]['plat'] = new_plat
+                        st.rerun()
+                        
+                    if ca2.button("⭐ Favoris", key=f"fav_{date_str}_{moment}"):
+                        # Sauvegarde dans l'onglet Favoris
+                        st.toast("Ajouté aux favoris !")
+
+# --- LOGIQUE DE RÉPÉTITION AUTOMATIQUE ---
+# Si "Répéter" est coché, on doit copier le contenu sur le slot suivant
+# (C'est une fonction à lancer avant l'affichage ou au changement)
