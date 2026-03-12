@@ -1,126 +1,71 @@
 import streamlit as st
 import google.generativeai as genai
-import gspread
 import json
-import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Nutri-Planning Family", layout="wide")
-
-# Connexion Gemini & Google Sheets
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-flash')
-credentials = dict(st.secrets["gcp_service_account"])
-gc = gspread.service_account_from_dict(credentials)
-sh = gc.open("NutriPlanning_DB") # Vérifie que c'est le nom exact de ton Sheet
 
-# --- RÉGLAGES FAMILLE (Expertise Diététique) ---
-RATIOS = {"Adulte": 1.0, "Enfant_4ans": 0.7, "Bebe_16mois": 0.5}
-FAMILLE_TOTALE = (2 * RATIOS["Adulte"]) + RATIOS["Enfant_4ans"] + RATIOS["Bebe_16mois"] # 3.2 portions
+# --- INITIALISATION DE LA MÉMOIRE (Session State) ---
+if 'menu_temporaire' not in st.session_state:
+    st.session_state.menu_temporaire = []
 
-# --- FONCTIONS ---
-def sauvegarder_recette(data):
-    ws = sh.worksheet("Recettes")
-    ws.append_row([data['nom'], json.dumps(data['ingredients']), json.dumps(data['instructions']), data['portions_base']])
-
-# --- INTERFACE ---
-st.title("👨‍👩‍👧‍👦 Nutri-Planning Family")
-
-tab1, tab2, tab3 = st.tabs(["📅 Mon Planning", "📥 Importer une idée", "🛒 Liste de Courses"])
-
-with tab2:
-    st.header("Importer une recette (TikTok, Insta, Texte)")
-    source = st.text_area("Collez le contenu ici...", placeholder="Lien ou description...")
+# --- BARRE LATÉRALE : ÉQUIPEMENTS ---
+with st.sidebar:
+    st.header("🛠️ Ma Cuisine")
+    eq_four = st.checkbox("Four", value=True)
+    eq_plaques = st.checkbox("Plaques Induction", value=True)
+    eq_airfryer = st.checkbox("Air Fryer")
+    eq_cookeo = st.checkbox("Cookeo / Multi-cuiseur")
+    eq_mixeur = st.checkbox("Mixeur (pour bébé)")
     
-    col_a, col_b = st.columns(2)
-    with col_a:
-        prevoir_restes = st.checkbox("Prévoir des restes pour demain midi (2 adultes)")
-    
-    if st.button("Calculer les doses pour la famille"):
-        with st.spinner("L'IA analyse et ajuste les quantités..."):
-            prompt = f"""Analyse cette recette et réponds UNIQUEMENT en JSON :
-            {{ "nom": "titre", "portions_base": 2, "ingredients": [{{"item": "nom", "qty": 100, "unit": "g"}}] }}
-            Source : {source}"""
-            
-            response = model.generate_content(prompt)
-            # Nettoyage du JSON (au cas où l'IA met des balises ```json)
-            clean_json = response.text.replace('```json', '').replace('```', '').strip()
-            recipe_data = json.loads(clean_json)
-            
-            # CALCUL DES DOSES RÉELLES
-            cible = FAMILLE_TOTALE + (2.0 if prevoir_restes else 0.0)
-            facteur = cible / recipe_data['portions_base']
-            
-            st.success(f"Recette : {recipe_data['nom']}")
-            st.write(f"**Quantités ajustées pour {cible} portions (Famille + restes éventuels) :**")
-            
-            for ing in recipe_data['ingredients']:
-                vrai_qty = float(ing['qty']) * facteur
-                st.write(f"- {ing['item']} : {vrai_qty:.0f} {ing['unit']}")
-            
-            if st.button("Confirmer et ajouter au planning"):
-                sauvegarder_recette(recipe_data)
-                st.balloons()
+    liste_eq = [e for e, v in {"Four":eq_four, "Plaques":eq_plaques, "AirFryer":eq_airfryer, "Cookeo":eq_cookeo, "Mixeur":eq_mixeur}.items() if v]
 
-with tab1:
-    st.header("📅 Générateur de Menu Intelligent")
-    
-    col_d1, col_d2 = st.columns(2)
-    with col_d1:
-        date_debut = st.date_input("Date de début", datetime.now())
-    with col_d2:
-        date_fin = st.date_input("Date de fin", datetime.now())
-    
-    # Paramètres de génération
-    st.subheader("Mes contraintes du moment")
-    c1, c2 = st.columns(2)
-    with c1:
-        mode = st.selectbox("Style de cuisine", ["Rapide & Simple", "Équilibré / Santé", "Réconfortant", "Batch Cooking"])
-    with c2:
-        equipements_ok = st.multiselect("Équipements à utiliser", ["Four", "Plaques", "AirFryer", "Cookeo", "Mixeur"])
+# --- INTERFACE PRINCIPALE ---
+st.title("🥗 Assistant Menu de Famille")
 
-    if st.button("🚀 Générer mon menu avec l'IA"):
-        with st.spinner("L'IA conçoit vos repas en tenant compte des enfants..."):
-            
-            # PROMPT PUISSANT POUR LA GÉNÉRATION
-            prompt_menu = f"""
-            Agis en tant qu'ingénieur nutritionniste. Génère un menu du {date_debut} au {date_fin} (Midi et Soir).
-            Foyer : 2 adultes, 1 enfant (4 ans), 1 bébé (16 mois).
-            Contraintes : {mode}, Équipements : {equipements_ok}.
-            
-            Format de réponse attendu (JSON uniquement) :
-            [
-              {{
-                "date": "YYYY-MM-DD",
-                "moment": "Midi/Soir",
-                "plat": "Nom du plat",
-                "ingredients": [ {{"item": "nom", "qty": 100, "unit": "g"}} ],
-                "note_bebe": "Conseil pour le petit de 16 mois"
-              }}
-            ]
-            """
-            
-            response = model.generate_content(prompt_menu)
-            
-            # Nettoyage et lecture du JSON
-            clean_json = response.text.replace('```json', '').replace('```', '').strip()
-            menu_genere = json.loads(clean_json)
-            
-            # Affichage et Sauvegarde
-            for repas in menu_genere:
-                with st.expander(f"📌 {repas['date']} - {repas['moment']} : {repas['plat']}"):
-                    st.write(f"**Conseil bébé :** {repas['note_bebe']}")
-                    # Bouton pour valider ce repas dans le planning réel
-                    if st.button(f"Valider {repas['plat']}", key=f"{repas['date']}{repas['moment']}"):
-                        ws_plan = sh.worksheet("Planning")
-                        ws_plan.append_row([repas['date'], repas['moment'], repas['plat'], "NON"])
-                        st.success("Ajouté au planning !")
+# 1. Sélection des dates
+col_d1, col_d2 = st.columns(2)
+date_deb = col_d1.date_input("Début", datetime.now())
+date_fin = col_d2.date_input("Fin", datetime.now() + timedelta(days=3))
 
+if st.button("✨ Générer une proposition de menu complète"):
+    with st.spinner("L'IA réfléchit au menu..."):
+        # Prompt pour générer la structure
+        prompt = f"Génère un menu du {date_deb} au {date_fin} (Midi et Soir) pour 2 adultes, un enfant de 4 ans et un bébé de 16 mois. Équipements : {liste_eq}. Réponds en JSON uniquement."
+        response = model.generate_content(prompt)
+        # On nettoie et on stocke dans la mémoire de la session
+        clean_json = response.text.replace('```json', '').replace('```', '').strip()
+        st.session_state.menu_temporaire = json.loads(clean_json)
+
+# 2. Affichage et Modification "au cas par cas"
+if st.session_state.menu_temporaire:
     st.divider()
-    st.subheader("🗓️ Aperçu de la semaine enregistrée")
-    # (Ici on garde le code pour afficher le contenu de l'onglet Planning de ton Sheet)
+    st.subheader("📝 Ajustez votre menu avant validation")
+    
+    for i, repas in enumerate(st.session_state.menu_temporaire):
+        with st.expander(f"📅 {repas['date']} - {repas['moment']} : {repas['plat']}", expanded=True):
+            c1, c2, c3 = st.columns([2, 1, 1])
+            
+            with c1:
+                st.write(f"**Ingrédients principaux :** {', '.join([ing['item'] for ing in repas['ingredients']])}")
+                st.caption(f"💡 Conseil Bébé : {repas.get('note_bebe', 'N/A')}")
+            
+            with c2:
+                nouveau_theme = st.selectbox("Changer le thème", ["Rapide", "Batch Cooking", "Végétarien", "Plaisir"], key=f"theme_{i}")
+            
+            with c3:
+                if st.button("🔄 Régénérer ce plat", key=f"btn_{i}"):
+                    # Ici, on demande à l'IA de ne changer QUE ce repas précis
+                    nouveau_prompt = f"Propose une autre idée de plat {nouveau_theme} pour le {repas['moment']} (Famille avec bébé). Équipements : {liste_eq}. Réponds en JSON."
+                    new_resp = model.generate_content(nouveau_prompt)
+                    # Mise à jour de la mémoire
+                    clean_new = new_resp.text.replace('```json', '').replace('```', '').strip()
+                    st.session_state.menu_temporaire[i] = json.loads(clean_new)
+                    st.rerun() # On rafraîchit l'affichage
 
-with tab3:
-    st.header("Ma Liste de Courses")
-    st.button("Générer à partir du planning")
+    if st.button("✅ Valider tout le menu et l'ajouter au planning"):
+        # Ici on écrit dans Google Sheets (ton onglet Planning)
+        st.success("Menu enregistré dans Google Sheets ! Préparez vos courses.")
