@@ -8,25 +8,52 @@ genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-2.5-flash')
 
 # --- LOGIQUE IA (Le cœur du système) ---
-def generer_suggestion_ia(moment, participants, outils, theme="Équilibré"):
+def generer_planning_complet_ia(date_debut, date_fin, outils, theme="Équilibré"):
     prompt = f"""
-    Propose un plat unique pour le {moment} pour les participants suivants : {participants}.
-    Le foyer inclut un enfant de 4 ans et un bébé de 16 mois (propose des textures adaptables).
-    Équipements disponibles : {outils}. Style : {theme}.
-    Réponds EXCLUSIVEMENT en JSON avec ce format :
-    {{"plat": "Nom du plat", "ingredients": [{{"item": "nom", "qty": 100, "unit": "g"}}]}}
+    Agis en tant que planificateur de repas familial. 
+    Génère un menu complet du {date_debut} au {date_fin} (Midi et Soir).
+    Foyer : 2 adultes, 1 enfant (4 ans), 1 bébé (16 mois).
+    Équipements : {outils}. Style : {theme}.
+    
+    Réponds EXCLUSIVEMENT en JSON. Le format doit être une liste d'objets :
+    [
+      {{
+        "date": "YYYY-MM-DD",
+        "moment": "Midi",
+        "plat": "Nom du plat",
+        "ingredients": [{{"item": "nom", "qty": 100, "unit": "g"}}]
+      }},
+      ...
+    ]
     """
     try:
         response = model.generate_content(prompt)
-        # Nettoyage du JSON
         clean_json = response.text.replace('```json', '').replace('```', '').strip()
         return json.loads(clean_json)
-    except:
-        return {"plat": "Erreur de génération", "ingredients": []}
+    except Exception as e:
+        st.error(f"Erreur : {e}")
+        return []
 
 # --- INITIALISATION MÉMOIRE ---
-if 'planning_temp' not in st.session_state:
-    st.session_state.planning_temp = {}
+if st.button("🪄 Générer tout le planning par l'IA"):
+    with st.spinner("L'IA cuisine tout votre menu de la semaine en une fois..."):
+        # Un seul appel API ici !
+        menu_complet = generer_planning_complet_ia(d_deb, d_fin, outils)
+        
+        # On remplit le session_state avec les résultats
+        for item in menu_complet:
+            d_str = item['date']
+            moment = item['moment']
+            if d_str not in st.session_state.planning_temp:
+                st.session_state.planning_temp[d_str] = {}
+            
+            st.session_state.planning_temp[d_str][moment] = {
+                "plat": item['plat'],
+                "ingredients": item['ingredients'],
+                "actif": True,
+                "participants": ["Papa", "Maman", "Enfant_4ans", "Bebe_16mois"]
+            }
+        st.rerun()
 
 # --- INTERFACE ---
 st.title("👨‍🍳 Assistant Menu Familial")
