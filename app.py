@@ -1,3 +1,4 @@
+import time
 import streamlit as st
 import google.generativeai as genai
 import json
@@ -25,14 +26,28 @@ def nettoyer_et_charger_json(texte):
         return None
 
 def generer_menu_ia(prompt_type, dates=None, moment=None, outils=None):
-    try:
-        if prompt_type == "BATCH":
-            prompt = f"Génère un menu du {dates[0]} au {dates[1]} (Midi et Soir). Foyer: 2 adultes, 1 enf (4a), 1 béb (16m). Outils: {outils}. Réponds UNIQUEMENT en JSON: [{{'date': 'YYYY-MM-DD', 'moment': 'Midi', 'plat': 'Nom', 'ingredients': []}}]"
-        else:
-            prompt = f"Propose une idée de plat pour le {moment}. Foyer: 2 adultes, 1 enf (4a), 1 béb (16m). Outils: {outils}. Réponds UNIQUEMENT en JSON: {{'plat': 'Nom', 'ingredients': []}}"
-        
-        response = model.generate_content(prompt)
-        return nettoyer_et_charger_json(response.text)
+    # On tente l'opération jusqu'à 3 fois en cas de saturation
+    for tentative in range(3):
+        try:
+            if prompt_type == "BATCH":
+                prompt = f"Génère un menu du {dates[0]} au {dates[1]} (Midi et Soir). Foyer: 2 adultes, 1 enf (4a), 1 béb (16m). Outils: {outils}. Réponds UNIQUEMENT en JSON: [{{'date': 'YYYY-MM-DD', 'moment': 'Midi', 'plat': 'Nom', 'ingredients': []}}]"
+            else:
+                prompt = f"Propose une idée de plat pour le {moment}. Foyer: 2 adultes, 1 enf (4a), 1 béb (16m). Outils: {outils}. Réponds UNIQUEMENT en JSON: {{'plat': 'Nom', 'ingredients': []}}"
+            
+            response = model.generate_content(prompt)
+            return nettoyer_et_charger_json(response.text)
+            
+        except Exception as e:
+            if "429" in str(e) or "ResourceExhausted" in str(e):
+                # On attend 5 secondes avant de réessayer
+                time.sleep(5)
+                continue 
+            else:
+                st.error(f"Erreur : {e}")
+                return None
+    
+    st.error("L'IA est vraiment trop occupée. Réessaye dans une minute.")
+    return None
     
     except Exception as e:
         if "429" in str(e) or "ResourceExhausted" in str(e):
