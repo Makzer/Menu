@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Nutri-Planning Family", layout="wide")
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('models/gemini-1.5-flash')
 
 # --- INITIALISATION DE LA MÉMOIRE (Session State) ---
 if 'menu_temporaire' not in st.session_state:
