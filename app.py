@@ -3,7 +3,7 @@ import google.generativeai as genai
 
 # CONFIGURATION
 st.set_page_config(page_title="Nutri-Planning Family", layout="centered")
-genai.configure(api_key="VOTRE_CLE_API_ICI")
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-flash')
 
 # INTERFACE
