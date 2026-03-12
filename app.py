@@ -2,124 +2,87 @@ import streamlit as st
 import google.generativeai as genai
 import json
 import time
+import re
 from datetime import datetime, timedelta
 
-# --- 1. CONFIGURATION & IA ---
+# --- CONFIGURATION IA ---
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-2.5-flash')
 
-# --- 2. INITIALISATION MÉMOIRE ---
 if 'planning_temp' not in st.session_state:
     st.session_state.planning_temp = {}
 
-# --- 3. FONCTION IA ROBUSTE ---
-def generer_via_ia(prompt):
-    """Tente de générer du contenu avec 3 essais en cas de saturation (Quota)."""
-    for tentative in range(3):
-        try:
-            response = model.generate_content(prompt)
-            texte = response.text
-            # Nettoyage JSON
-            if "```json" in texte:
-                texte = texte.split("```json")[1].split("```")[0]
-            elif "```" in texte:
-                texte = texte.split("```")[1].split("```")[0]
-            return json.loads(texte.strip())
-        except Exception as e:
-            if "ResourceExhausted" in str(e) or "429" in str(e):
-                time.sleep(5) # On attend 5s si Google sature
-                continue
-            st.error(f"Erreur IA : {e}")
-            return None
+# --- FONCTION D'EXTRACTION SUR-VITAMINÉE ---
+def extraire_json_robuste(texte):
+    """Cherche un bloc JSON [ ] dans le texte, peu importe ce qu'il y a autour."""
+    try:
+        # On cherche tout ce qui est entre les premiers [ et derniers ]
+        match = re.search(r'\[.*\]', texte, re.DOTALL)
+        if match:
+            return json.loads(match.group())
+        # Si c'est un objet simple { }
+        match_obj = re.search(r'\{.*\}', texte, re.DOTALL)
+        if match_obj:
+            return [json.loads(match_obj.group())]
+    except Exception as e:
+        st.error(f"Erreur de lecture JSON : {e}")
     return None
 
-# --- 4. RÉGLAGES (SIDEBAR) ---
+# --- INTERFACE ---
+st.title("👨‍🍳 Assistant Menu Familial")
+
 with st.sidebar:
     st.header("⚙️ Réglages")
     d_deb = st.date_input("Du", datetime.now())
-    d_fin = st.date_input("Au", datetime.now() + timedelta(days=3))
+    d_fin = st.date_input("Au", datetime.now() + timedelta(days=2))
     st.divider()
-    st.write("🛠️ Équipements disponibles :")
-    eq_four = st.checkbox("Four", value=True)
-    eq_plaques = st.checkbox("Plaques", value=True)
-    eq_airfryer = st.checkbox("AirFryer")
-    eq_cookeo = st.checkbox("Cookeo")
-    outils_ok = [k for k, v in {"Four":eq_four, "Plaques":eq_plaques, "AirFryer":eq_airfryer, "Cookeo":eq_cookeo}.items() if v]
+    outils = [k for k, v in {"Four":True, "Plaques":True, "AirFryer":False}.items() if st.checkbox(k, value=v)]
 
-# --- 5. INTERFACE PRINCIPALE ---
-st.title("👨‍🍳 Assistant Menu Familial")
-
-# Bouton de génération globale
+# --- BOUTON DE GÉNÉRATION ---
 if st.button("🪄 Générer tout le planning par l'IA"):
-    with st.spinner("L'IA prépare tous les repas d'un coup..."):
-        prompt_batch = f"""
-        Génère un menu du {d_deb} au {d_fin} (Midi et Soir).
-        Foyer : 2 adultes, 1 enfant (4 ans), 1 bébé (16 mois).
-        Équipements : {outils_ok}.
-        Réponds UNIQUEMENT en JSON sous forme de liste :
-        [ {{"date": "YYYY-MM-DD", "moment": "Midi", "plat": "Nom", "ingredients": []}} ]
-        """
-        menu = generer_via_ia(prompt_batch)
-        if menu:
-            st.session_state.planning_temp = {} # Reset
-            for item in menu:
-                d_str = item['date']
-                if d_str not in st.session_state.planning_temp:
-                    st.session_state.planning_temp[d_str] = {}
-                st.session_state.planning_temp[d_str][item['moment']] = {
-                    "plat": item['plat'],
-                    "ingredients": item.get('ingredients', []),
-                    "actif": True,
-                    "participants": ["Papa", "Maman", "Enfant_4ans", "Bebe_16mois"]
-                }
-            st.success("Menu généré !")
-            st.rerun()
-
-# --- 6. AFFICHAGE CALENDRIER ---
-JOURS = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"]
-
-if st.session_state.planning_temp:
-    for d_str, moments in sorted(st.session_state.planning_temp.items()):
-        dt_obj = datetime.strptime(d_str, '%Y-%m-%d')
-        st.markdown(f"### 🗓️ {JOURS[dt_obj.weekday()]} {dt_obj.strftime('%d/%m')}")
+    status = st.empty() # Zone de texte pour voir ce qui se passe
+    status.info("⏳ Connexion à l'IA en cours...")
+    
+    prompt = f"""Génère un menu du {d_deb} au {d_fin} (Midi et Soir).
+    Foyer : 2 adultes, 1 enfant (4 ans), 1 bébé (16 mois). Outils : {outils}.
+    Réponds UNIQUEMENT avec un tableau JSON. 
+    Format : [{{"date": "{d_deb}", "moment": "Midi", "plat": "Nom", "ingredients": []}}]"""
+    
+    try:
+        response = model.generate_content(prompt)
+        status.info("✅ Réponse reçue, analyse du format...")
         
-        col_midi, col_soir = st.columns(2)
-        for moment, col in [("Midi", col_midi), ("Soir", col_soir)]:
-            with col:
-                if moment in moments:
-                    data = moments[moment]
-                    if data.get("actif", True):
-                        with st.container(border=True):
-                            # Header
-                            h1, h2 = st.columns([4, 1])
-                            h1.subheader(moment)
-                            if h2.button("🗑️", key=f"del_{d_str}_{moment}"):
-                                data["actif"] = False
-                                st.rerun()
+        # DEBUG : Affiche la réponse brute si ça échoue (décommenter si besoin)
+        # st.expander("Voir réponse brute").write(response.text)
+        
+        menu = extraire_json_robuste(response.text)
+        
+        if menu:
+            st.session_state.planning_temp = {}
+            for item in menu:
+                d_str = item.get('date')
+                mom = item.get('moment')
+                if d_str and mom:
+                    if d_str not in st.session_state.planning_temp:
+                        st.session_state.planning_temp[d_str] = {}
+                    st.session_state.planning_temp[d_str][mom] = {
+                        "plat": item.get('plat', 'Sans nom'),
+                        "ingredients": item.get('ingredients', []),
+                        "actif": True,
+                        "participants": ["Papa", "Maman", "Enfant_4ans", "Bebe_16mois"]
+                    }
+            status.success("✨ Menu prêt !")
+            time.sleep(1)
+            st.rerun()
+        else:
+            status.error("❌ L'IA a répondu mais le format est illisible. Réessayez.")
+            st.write("Réponse reçue :", response.text) # On affiche pour comprendre
+            
+    except Exception as e:
+        if "ResourceExhausted" in str(e):
+            status.error("🛑 Quota API atteint. Attends 60 secondes sans cliquer.")
+        else:
+            status.error(f"💥 Erreur : {e}")
 
-                            # Nom du plat
-                            st.info(f"#### {data['plat']}")
-
-                            # Participants
-                            data["participants"] = st.multiselect(
-                                "Qui mange ?", 
-                                ["Papa", "Maman", "Enfant_4ans", "Bebe_16mois"],
-                                default=data["participants"],
-                                key=f"p_{d_str}_{moment}"
-                            )
-
-                            # Actions
-                            c_ch, c_rep = st.columns(2)
-                            if c_ch.button("🔄 Changer", key=f"reg_{d_str}_{moment}"):
-                                with st.spinner("Nouvelle idée..."):
-                                    prompt_single = f"Propose un autre plat pour le {moment} ({d_str}) pour {data['participants']}. Équipements: {outils_ok}. JSON: {{'plat': 'Nom', 'ingredients': []}}"
-                                    nouveau = generer_via_ia(prompt_single)
-                                    if nouveau:
-                                        st.session_state.planning_temp[d_str][moment].update(nouveau)
-                                        st.rerun()
-                            
-                            data["repeté"] = c_rep.checkbox("🔁 Répéter", value=data.get("repeté", False), key=f"rep_{d_str}_{moment}")
-                    else:
-                        if st.button(f"➕ Prévoir {moment}", key=f"add_{d_str}_{moment}"):
-                            data["actif"] = True
-                            st.rerun()
+# --- AFFICHAGE CALENDRIER (Même code qu'avant) ---
+# ... (Gardez la boucle d'affichage du calendrier ici)
