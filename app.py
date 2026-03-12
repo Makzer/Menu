@@ -1,67 +1,75 @@
 import streamlit as st
 import google.generativeai as genai
 import gspread
+import json
 import pandas as pd
 from datetime import datetime
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Nutri-Planning Family", layout="wide")
 
-# Connexion Gemini
+# Connexion Gemini & Google Sheets
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel('gemini-1.5-flash')
-
-# Connexion Google Sheets (Via Service Account)
 credentials = dict(st.secrets["gcp_service_account"])
 gc = gspread.service_account_from_dict(credentials)
-# Remplacez par le nom EXACT de votre fichier Google Sheets
-sh = gc.open("NutriPlanning_DB") 
+sh = gc.open("NutriPlanning_DB") # Vérifie que c'est le nom exact de ton Sheet
 
-# --- LOGIQUE DIÉTÉTIQUE ---
-# Ratios basés sur les besoins caloriques moyens par âge
-RATIOS = {
-    "Adulte": 1.0,
-    "Enfant (4 ans)": 0.7,
-    "Bébé (16 mois)": 0.5
-}
-FOYER_BASE = (2 * RATIOS["Adulte"]) + RATIOS["Enfant (4 ans)"] + RATIOS["Bébé (16 mois)"] # = 3.2 portions
+# --- RÉGLAGES FAMILLE (Expertise Diététique) ---
+RATIOS = {"Adulte": 1.0, "Enfant_4ans": 0.7, "Bebe_16mois": 0.5}
+FAMILLE_TOTALE = (2 * RATIOS["Adulte"]) + RATIOS["Enfant_4ans"] + RATIOS["Bebe_16mois"] # 3.2 portions
+
+# --- FONCTIONS ---
+def sauvegarder_recette(data):
+    ws = sh.worksheet("Recettes")
+    ws.append_row([data['nom'], json.dumps(data['ingredients']), json.dumps(data['instructions']), data['portions_base']])
 
 # --- INTERFACE ---
-st.title("🥗 Nutri-Planning Family")
+st.title("👨‍👩‍👧‍👦 Nutri-Planning Family")
 
-tab1, tab2, tab3 = st.tabs(["📅 Planning", "📥 Importer & Calculer", "🛒 Courses"])
+tab1, tab2, tab3 = st.tabs(["📅 Mon Planning", "📥 Importer une idée", "🛒 Liste de Courses"])
 
 with tab2:
-    st.header("Nouvelle Recette")
-    source = st.text_area("Collez le lien ou le texte de la recette")
+    st.header("Importer une recette (TikTok, Insta, Texte)")
+    source = st.text_area("Collez le contenu ici...", placeholder="Lien ou description...")
     
-    col1, col2 = st.columns(2)
-    with col1:
-        faire_plus = st.checkbox("Prévoir des restes pour demain (2 adultes)")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        prevoir_restes = st.checkbox("Prévoir des restes pour demain midi (2 adultes)")
     
-    if st.button("Analyser et Ajuster les doses"):
-        with st.spinner("L'IA calcule les portions pour votre famille..."):
-            # 1. Extraction par l'IA
-            prompt = f"Extrais cette recette en JSON. Donne 'portions_origine' et la liste 'ingredients' avec 'item', 'qty', 'unit'. Source: {source}"
+    if st.button("Calculer les doses pour la famille"):
+        with st.spinner("L'IA analyse et ajuste les quantités..."):
+            prompt = f"""Analyse cette recette et réponds UNIQUEMENT en JSON :
+            {{ "nom": "titre", "portions_base": 2, "ingredients": [{{"item": "nom", "qty": 100, "unit": "g"}}] }}
+            Source : {source}"""
+            
             response = model.generate_content(prompt)
-            # (Note : Dans un vrai code on parserait le JSON ici)
+            # Nettoyage du JSON (au cas où l'IA met des balises ```json)
+            clean_json = response.text.replace('```json', '').replace('```', '').strip()
+            recipe_data = json.loads(clean_json)
             
-            # 2. Calcul du multiplicateur
-            nb_personnes_ce_soir = FOYER_BASE
-            nb_personnes_demain = 2.0 if faire_plus else 0.0
-            total_portions_voulues = nb_personnes_ce_soir + nb_personnes_demain
+            # CALCUL DES DOSES RÉELLES
+            cible = FAMILLE_TOTALE + (2.0 if prevoir_restes else 0.0)
+            facteur = cible / recipe_data['portions_base']
             
-            st.success(f"Doses calculées pour {total_portions_voulues} portions (Famille + restes)")
-            st.write(f"Multiplier les quantités d'origine par : **{total_portions_voulues:.2f} / portions_origine**")
+            st.success(f"Recette : {recipe_data['nom']}")
+            st.write(f"**Quantités ajustées pour {cible} portions (Famille + restes éventuels) :**")
             
-            # 3. Sauvegarde dans Google Sheets
-            worksheet = sh.worksheet("Recettes")
-            # Logique d'écriture simplifiée
-            worksheet.append_row([datetime.now().strftime("%d/%m/%Y"), "Nom du plat", str(response.text)])
-            st.balloons()
+            for ing in recipe_data['ingredients']:
+                vrai_qty = float(ing['qty']) * facteur
+                st.write(f"- {ing['item']} : {vrai_qty:.0f} {ing['unit']}")
+            
+            if st.button("Confirmer et ajouter au planning"):
+                sauvegarder_recette(recipe_data)
+                st.balloons()
+
+with tab1:
+    st.header("Choix des dates")
+    date_debut = st.date_input("Du", datetime.now())
+    date_fin = st.date_input("Au", datetime.now())
+    st.info("Sélectionnez vos repas dans la bibliothèque ci-dessous.")
+    # Ici on affichera les recettes enregistrées pour les glisser dans le planning
 
 with tab3:
-    st.header("🛒 Liste de Courses Automatique")
-    if st.button("Générer la liste de la semaine"):
-        st.write("L'app additionne tous les ingrédients du planning...")
-        # Ici on fera la somme des ingrédients de la table Planning
+    st.header("Ma Liste de Courses")
+    st.button("Générer à partir du planning")
